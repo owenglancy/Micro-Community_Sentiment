@@ -1,5 +1,9 @@
 import pandas as pd
 import json
+import numpy as np
 
-df = pd.read_json("C:/Users/oweng/OneDrive - Dublin City University/Desktop/Pet Projects/Micro-community Sentiment/exports/1565726185059778710.json")
-print(df.head(12))
+with open("exports\\1565726185059778710.json") as f:
+    data = json.load(f)
+    df = pd.json_normalize(data)
+    print(df)
+    df.to_csv("exports\\testframe.csv", index=False)
