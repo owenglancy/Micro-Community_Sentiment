@@ -153,7 +153,7 @@ class DiscordMessageExporter:
 
 
 if __name__ == "__main__":
-    CHANNEL_ID = "1565726185059778710"
+    CHANNEL_ID = "1565726273731432558"
     AUTH_TOKEN = "REDACTED"
 
     exporter = DiscordMessageExporter(
