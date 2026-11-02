@@ -7,7 +7,7 @@ import signal
 import sys
 from typing import List, Dict, Optional
 import aiohttp
-
+import Constants
 from utils.logger import configure_logging
 
 
@@ -154,7 +154,7 @@ class DiscordMessageExporter:
 
 if __name__ == "__main__":
     CHANNEL_ID = "1565726273731432558"
-    AUTH_TOKEN = "REDACTED"
+    AUTH_TOKEN = Constants.AUTH_TOKEN
 
     exporter = DiscordMessageExporter(
         channel_id=CHANNEL_ID,

@@ -42,8 +42,8 @@ for path in Path("exports").glob("*.json"):
             "embed_title": get(m, "embeds", "title"),
             "embed_url": get(m, "embeds", "url"),
             "sticker": get(m, "sticker_items", "name"),
-            "reaction_count": len(get(m, "reactions", "count")),
-            "reaction_emoji": get(m, "reactions", "emoji")
+            "reaction_count": len(get(m, "reactions", "count") or []),
+            "reaction_emoji": get(m, "reactions", "emoji", "name")
         })
 
 df = pd.DataFrame(rows)
