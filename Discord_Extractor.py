@@ -17,13 +17,15 @@ class DiscordMessageExporter:
             channel_id: str,
             auth_token: str,
             output_file: str = "messages",
-            save_interval: int = 50
+            save_interval: int = 50,
+            is_bot: bool = True
     ):
         self.channel_id = channel_id
-        self.base_url = f"https://discord.com/api/v9/channels/{channel_id}/messages"
+        self.base_url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
+        # Bot tokens must be sent as "Bot <token>"
         self.headers = {
-            "Authorization": auth_token,
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+            "Authorization": f"Bot {auth_token}" if is_bot else auth_token,
+            "User-Agent": "DiscordBot (https://github.com, 1.0)"
         }
         self.output_file = f"exports/{output_file}.json"
         self.save_interval = save_interval
