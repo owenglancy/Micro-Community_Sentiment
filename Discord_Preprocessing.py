@@ -42,7 +42,7 @@ for path in Path("exports").glob("*.json"):
             "embed_title": get(m, "embeds", "title"),
             "embed_url": get(m, "embeds", "url"),
             "sticker": get(m, "sticker_items", "name"),
-            "reaction_count": get(m, "reactions", "count"),
+            "reaction_count": len(get(m, "reactions", "count")),
             "reaction_emoji": get(m, "reactions", "emoji")
         })
 
