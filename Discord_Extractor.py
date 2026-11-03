@@ -1,4 +1,6 @@
-# And so it begins
+# Based on discord-message-exporter by ByteScrape (https://github.com/ByteScrape/discord-message-exporter)
+
+
 import asyncio
 import json
 import logging
