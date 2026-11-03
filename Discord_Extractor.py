@@ -24,7 +24,6 @@ class DiscordMessageExporter:
     ):
         self.channel_id = channel_id
         self.base_url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
-        # Bot tokens must be sent as "Bot <token>"
         self.headers = {
             "Authorization": f"Bot {auth_token}" if is_bot else auth_token,
             "User-Agent": "DiscordBot (https://github.com, 1.0)"
