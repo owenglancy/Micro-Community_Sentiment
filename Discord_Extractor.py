@@ -2,6 +2,7 @@
 
 
 import asyncio
+import argparse 
 import json
 import logging
 import os
@@ -9,7 +10,7 @@ import signal
 import sys
 from typing import List, Dict, Optional
 import aiohttp
-import Constants
+from dotenv import load_dotenv
 from utils.logger import configure_logging
 
 
@@ -18,7 +19,8 @@ class DiscordMessageExporter:
             self,
             channel_id: str,
             auth_token: str,
-            output_file: str = "messages",
+            output_file:str = "messages",
+            out_dir: str = "exports",
             save_interval: int = 50,
             is_bot: bool = True
     ):
@@ -28,7 +30,7 @@ class DiscordMessageExporter:
             "Authorization": f"Bot {auth_token}" if is_bot else auth_token,
             "User-Agent": "DiscordBot (https://github.com, 1.0)"
         }
-        self.output_file = f"exports/{output_file}.json"
+        self.output_file = f"{out_dir}/{output_file}.json"
         self.save_interval = save_interval
         self.messages: List[Dict] = []
         self.last_message_id: Optional[str] = None
@@ -154,19 +156,29 @@ class DiscordMessageExporter:
                 self.logger.error(f"Save failed (attempt {attempt + 1}): {str(e)}")
                 await asyncio.sleep(0.5 * (attempt + 1))
 
-
+load_dotenv()
 if __name__ == "__main__":
-    CHANNEL_ID = "1565726273731432558"
-    AUTH_TOKEN = Constants.AUTH_TOKEN
+    parser = argparse.ArgumentParser(description="Export Discord channel to JSONL")
+    parser.add_argument("channel_ids", nargs="+", help="Discord channel ID(s) to export")
+    parser.add_argument("--out_dir", default="exports")
+    args = parser.parse_args()
+    AUTH_TOKEN = os.environ.get("DISCORD_TOKEN")
+    if not AUTH_TOKEN:
+        sys.exit("Error: DISCORD_TOKEN not found in environment variables.")
 
-    exporter = DiscordMessageExporter(
-        channel_id=CHANNEL_ID,
-        auth_token=AUTH_TOKEN,
-        output_file=CHANNEL_ID,
-        save_interval=50
+    for channel_id in args.channel_ids:
+        exporter = DiscordMessageExporter(
+            channel_id= channel_id,
+            auth_token=AUTH_TOKEN,
+            out_dir= args.out_dir,
+            output_file=channel_id,
+            save_interval=50
     )
 
-    try:
-        asyncio.run(exporter.run())
-    except KeyboardInterrupt:
-        print("\nShutdown completed safely")
+        try:
+            asyncio.run(exporter.run())
+            if exporter.shutdown_requested:
+                break
+        except KeyboardInterrupt:
+            print("\nShutdown completed safely")
+            break
