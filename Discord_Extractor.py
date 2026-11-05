@@ -22,7 +22,8 @@ class DiscordMessageExporter:
             output_file:str = "messages",
             out_dir: str = "exports",
             save_interval: int = 50,
-            is_bot: bool = True
+            is_bot: bool = True,
+            before_id: Optional[str] = None
     ):
         self.channel_id = channel_id
         self.base_url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
@@ -33,7 +34,7 @@ class DiscordMessageExporter:
         self.output_file = f"{out_dir}/{output_file}.json"
         self.save_interval = save_interval
         self.messages: List[Dict] = []
-        self.last_message_id: Optional[str] = None
+        self.last_message_id: Optional[str] = before_id
         self.shutdown_requested = False
         self.rate_limit_delay = 1.0
         configure_logging(
@@ -161,6 +162,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Export Discord channel to JSONL")
     parser.add_argument("channel_ids", nargs="+", help="Discord channel ID(s) to export")
     parser.add_argument("--out_dir", default="exports")
+    parser.add_argument("--before")
     args = parser.parse_args()
     AUTH_TOKEN = os.environ.get("DISCORD_TOKEN")
     if not AUTH_TOKEN:
@@ -172,7 +174,8 @@ if __name__ == "__main__":
             auth_token=AUTH_TOKEN,
             out_dir= args.out_dir,
             output_file=channel_id,
-            save_interval=50
+            save_interval=50,
+            before_id = args.before
     )
 
         try:
