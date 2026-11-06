@@ -21,7 +21,6 @@ class DiscordMessageExporter:
             auth_token: str,
             output_file:str = "messages",
             out_dir: str = "exports",
-            save_interval: int = 50,
             is_bot: bool = True,
             before_id: Optional[str] = None
     ):
@@ -31,12 +30,14 @@ class DiscordMessageExporter:
             "Authorization": f"Bot {auth_token}" if is_bot else auth_token,
             "User-Agent": "DiscordBot (https://github.com, 1.0)"
         }
-        self.output_file = f"{out_dir}/{output_file}.json"
-        self.save_interval = save_interval
-        self.messages: List[Dict] = []
+        self.output_file = f"{out_dir}/{output_file}.jsonl"
+        self.total_fetched = 0
         self.last_message_id: Optional[str] = before_id
         self.shutdown_requested = False
         self.rate_limit_delay = 1.0
+        self.max_server_retries = 5
+        self.server_error_count = 0     # consecutive 5xx responses
+        self.export_failed = False      # True if the channel stopped before reaching its end
         configure_logging(
             name="discord-message-exporter",
             path="logs",
@@ -58,7 +59,7 @@ class DiscordMessageExporter:
             self._load_existing_messages()
             await self._fetch_message_loop()
         finally:
-            await self._shutdown_sequence()
+            self._shutdown_sequence()
 
     def _register_signal_handlers(self) -> None:
         """Set up cross-platform interrupt handling"""
@@ -72,21 +73,26 @@ class DiscordMessageExporter:
             loop.add_signal_handler(signal.SIGINT, self._trigger_graceful_shutdown)
         self.signal_registered = True
 
+    def append_batch(self, batch) -> None:
+        with open(self.output_file,'a', encoding = "utf-8") as f:
+            for msg in batch:
+                f.write(json.dumps(msg, ensure_ascii=False) + "\n")
+            self.total_fetched += len(batch)
+
     async def _fetch_message_loop(self) -> None:
         async with aiohttp.ClientSession(headers=self.headers) as session:
             while not self.shutdown_requested:
                 try:
                     messages = await self._fetch_message_batch(session)
+                    if messages is None:
+                        continue
                     if not messages:
                         break
-
-                    self.messages.extend(messages)
+                    self.server_error_count = 0
+                    self.append_batch(messages)
                     self.last_message_id = messages[-1]["id"]
 
-                    if len(self.messages) % self.save_interval == 0:
-                        self._atomic_save()
-
-                    self.logger.info(f"Fetched {len(messages)} messages | Total: {len(self.messages)}")
+                    self.logger.info(f"Fetched {len(messages)} messages | Total: {(self.total_fetched)}")
 
                     # Dynamic delay adjustment
                     self.rate_limit_delay = max(self.rate_limit_delay * 0.9, 0.5)
@@ -97,65 +103,100 @@ class DiscordMessageExporter:
                     await asyncio.sleep(self.rate_limit_delay * 2)
                 except json.JSONDecodeError:
                     self.logger.critical("Invalid JSON response")
+                    self.export_failed = True
                     break
 
-    async def _fetch_message_batch(self, session: aiohttp.ClientSession) -> List[Dict]:
+    async def _fetch_message_batch(self, session: aiohttp.ClientSession) -> Optional[List[Dict]]:
         params = {"limit": "100"}
         if self.last_message_id:
             params["before"] = self.last_message_id
 
-        try:
-            async with session.get(self.base_url, params=params) as response:
-                if response.status == 200:
-                    return await response.json()
-                return await self._handle_api_error(response)
-        except asyncio.CancelledError:
-            self._atomic_save()
-            raise
+        async with session.get(self.base_url, params=params) as response:
+            if response.status == 200:
+                return await response.json()
+            return await self._handle_api_error(response)
 
-    async def _handle_api_error(self, response: aiohttp.ClientResponse) -> List[Dict]:
+
+    async def _handle_api_error(self, response: aiohttp.ClientResponse) -> Optional[List[Dict]]:
+        """Returns None to retry the same request, or [] to stop this channel."""
         if response.status == 429:
             retry_after = float(response.headers.get("Retry-After", 5))
             self.logger.error(f"Rate limited - retrying after {retry_after}s")
             await asyncio.sleep(retry_after)
-            return []
+            return None
 
+        if response.status >= 500:
+            self.server_error_count += 1
+            if self.server_error_count <= self.max_server_retries:
+                delay = 2 ** self.server_error_count
+                self.logger.error(
+                    f"Server error {response.status} - retry "
+                    f"{self.server_error_count}/{self.max_server_retries} in {delay}s"
+                )
+                await asyncio.sleep(delay)
+                return None
+
+        # Out of retries, or a status that retrying won't fix (401, 403, 404...)
         self.logger.critical(f"API Error {response.status}: {await response.text()}")
+        self.export_failed = True
         return []
 
     def _load_existing_messages(self) -> None:
-        if os.path.exists(self.output_file):
-            try:
-                with open(self.output_file, "r") as f:
-                    existing = json.load(f)
-                    if isinstance(existing, list):
-                        self.messages = existing
-                        self.last_message_id = existing[-1]["id"] if existing else None
-            except (json.JSONDecodeError, IOError) as e:
-                self.logger.critical(f"Error loading existing data: {str(e)}")
+        if not os.path.exists(self.output_file):
+            return
 
-    def _atomic_save(self) -> None:
-        temp_path = f"{self.output_file}.tmp"
+        last_id = None      # id from the last valid line (the oldest message saved)
+        offset = 0          # bytes consumed so far
+        good_end = 0        # byte position just after the last valid line
+        bad_tail = False    # True if the most recent non-blank line was unreadable
+        last_raw = b""
+
         try:
-            with open(temp_path, "w") as f:
-                json.dump(self.messages, f, indent=2)
-            os.replace(temp_path, self.output_file)
-        except IOError as e:
-            self.logger.critical(f"Save failed: {str(e)}")
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
+            # Binary mode so offsets are exact byte positions we can truncate to
+            with open(self.output_file, "rb") as f:
+                for line_no, raw in enumerate(f, start=1):
+                    offset += len(raw)
+                    if not raw.strip():
+                        continue
+                    last_raw = raw
+                    try:
+                        # ValueError covers both JSONDecodeError and UnicodeDecodeError
+                        msg_id = json.loads(raw.decode("utf-8"))["id"]
+                    except (ValueError, KeyError, TypeError):
+                        self.logger.warning(f"Skipping unreadable line {line_no}")
+                        bad_tail = True
+                        continue
+                    last_id = msg_id
+                    good_end = offset
+                    bad_tail = False
 
-    async def _shutdown_sequence(self) -> None:
+            if bad_tail:
+                # Unreadable data at the end (e.g. crash mid-write): cut it off so
+                # the next append starts on a clean line instead of merging into it
+                with open(self.output_file, "r+b") as f:
+                    f.truncate(good_end)
+                self.logger.warning(f"Truncated damaged tail; file now ends at byte {good_end}")
+            elif last_raw and not last_raw.endswith(b"\n"):
+                # Last line is valid but missing its newline; add it before appending
+                with open(self.output_file, "ab") as f:
+                    f.write(b"\n")
+
+            if last_id is not None:
+                self.last_message_id = last_id
+        except IOError as e:
+            self.logger.critical(f"Error loading existing data: {str(e)}")
+
+
+    def _shutdown_sequence(self) -> None:
         self.logger.info("\nInitiating graceful shutdown...")
 
-        for attempt in range(3):
-            try:
-                self._atomic_save()
-                self.logger.info(f"Successfully saved {len(self.messages)} messages")
-                break
-            except IOError as e:
-                self.logger.error(f"Save failed (attempt {attempt + 1}): {str(e)}")
-                await asyncio.sleep(0.5 * (attempt + 1))
+        if self.export_failed:
+            self.logger.critical(
+                f"Export of channel {self.channel_id} is INCOMPLETE - "
+                f"saved{self.total_fetched} messages this run, rerun to resume")
+        else:
+            self.logger.info(f"Successfully saved {(self.total_fetched)} messages")
+
 
 load_dotenv()
 if __name__ == "__main__":
@@ -168,20 +209,26 @@ if __name__ == "__main__":
     if not AUTH_TOKEN:
         sys.exit("Error: DISCORD_TOKEN not found in environment variables.")
 
+    failed_channels = []
+
     for channel_id in args.channel_ids:
         exporter = DiscordMessageExporter(
             channel_id= channel_id,
             auth_token=AUTH_TOKEN,
             out_dir= args.out_dir,
             output_file=channel_id,
-            save_interval=50,
             before_id = args.before
     )
 
         try:
             asyncio.run(exporter.run())
+            if exporter.export_failed:
+                failed_channels.append(channel_id)
             if exporter.shutdown_requested:
                 break
         except KeyboardInterrupt:
             print("\nShutdown completed safely")
             break
+
+    if failed_channels:
+        sys.exit(f"Incomplete exports: {', '.join(failed_channels)}")
