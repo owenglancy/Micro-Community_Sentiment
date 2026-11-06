@@ -5,6 +5,8 @@ from pathlib import Path
 import argparse
 import os
 from dotenv import load_dotenv
+import hmac
+import hashlib 
 _MISSING = object()
 
 def get(d, *keys, default=None):
@@ -24,10 +26,17 @@ def get(d, *keys, default=None):
                 values.append(value)
         return values
     return default
+load_dotenv()
+try:
+    key_bytes = os.environ.get("HASH_KEY").encode()
+except:
+    raise AttributeError
 
+def hash_id(author_id):
+    return hmac.new(key_bytes, author_id.encode(), hashlib.sha256).hexdigest()
 
 rows = []
-load_dotenv()
+
 for path in Path(os.environ.get("DATA_DIRECTORY")).glob("*.jsonl"):
     with open(path, encoding="utf-8") as f:
         for line in f:
@@ -39,10 +48,8 @@ for path in Path(os.environ.get("DATA_DIRECTORY")).glob("*.jsonl"):
                 "channel_id": m["channel_id"],
                 "message_id": m["id"],
                 "author_id": m["author"]["id"],
-                "author_username": m["author"]["username"],
-                "nickname": m["author"]["global_name"],
                 "content": m["content"],
-                "mentioned": get(m, "mentions", "username"),
+                "mentioned": get(m, "mentions", "id", default=[]),
                 "attachments": get(m, "attachments", "filename"),
                 "embed_title": get(m, "embeds", "title"),
                 "embed_url": get(m, "embeds", "url"),
@@ -55,7 +62,9 @@ for path in Path(os.environ.get("DATA_DIRECTORY")).glob("*.jsonl"):
 
 df = pd.DataFrame(rows)
 df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, format="ISO8601")
-df[["channel_id", "author_id", "author_username", "nickname"]] = df[["channel_id", "author_id", "author_username", "nickname"]].astype("category")
+df["author_id"] = df["author_id"].map(hash_id)
+df["mentioned"] = df["mentioned"].map(lambda ids: [hash_id(i) for i in ids])
+df[["channel_id", "author_id"]] = df[["channel_id", "author_id"]].astype("category")
 df = df.sort_values("timestamp", kind="stable", ignore_index=True)
 
 df.info()
