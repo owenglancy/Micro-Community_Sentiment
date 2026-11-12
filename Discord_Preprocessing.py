@@ -7,6 +7,7 @@ import os
 from dotenv import load_dotenv
 import hmac
 import hashlib 
+import re
 _MISSING = object()
 
 def get(d, *keys, default=None):
@@ -64,10 +65,25 @@ df = pd.DataFrame(rows)
 df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, format="ISO8601")
 df["author_id"] = df["author_id"].map(hash_id)
 df["mentioned"] = df["mentioned"].map(lambda ids: [hash_id(i) for i in ids])
+
+def replace_mentions(text):
+    for id, pseudonym in pseudonyms.items():
+        text =  re.sub(f"<@!?{id}>", f"@{pseudonym}", text)
+    return text
+
+pseudonyms_path = os.environ.get("Pseudonym_dict")
+with open(pseudonyms_path) as f:
+    pseudonyms = json.load(f)
+    print(type(pseudonyms))
+    df["content"] = df["content"].map(replace_mentions)
+    mask = (df["content"].str.contains(r"<@!?&?\d+>"))
+    print(df[mask])
+
+
 df[["channel_id", "author_id"]] = df[["channel_id", "author_id"]].astype("category")
 df = df.sort_values("timestamp", kind="stable", ignore_index=True)
 
 df.info()
 print(df.tail(10))
+len(df)
 df
-
